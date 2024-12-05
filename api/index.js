@@ -51,11 +51,29 @@ app.get('/', (req, res) => {
     res.send('Welcome to the Beauty Parlour API');
 })
 
+
 app.get('/appointments/:phone', async (req, res) => {
     try {
         const appointment = await Appointment.findOne({ phone: req.params.phone });
         if (appointment) {
-            res.json({ exists: true, appointment });
+            const currentDate = new Date();
+            const appointmentDate = new Date(appointment.date);
+
+            // Check if the current time is after the appointment time
+            if (currentDate > appointmentDate) {
+                await Appointment.deleteOne({ phone: req.params.phone });
+                return res.json({
+                    exists: true,
+                    appointment,
+                    pastAppointment: true // Add this flag
+                });
+            } else {
+                return res.json({
+                    exists: true,
+                    appointment,
+                    pastAppointment: false // Appointment hasn't passed yet
+                });
+            }
         } else {
             res.json({ exists: false });
         }
@@ -64,9 +82,9 @@ app.get('/appointments/:phone', async (req, res) => {
     }
 });
 
+
 app.post('/appointments', async (req, res) => {
     try {
-        console.log(req.body);
         const { name, email, phone, date, time, service, specialRequests } = req.body;
 
         // Validate the date format
