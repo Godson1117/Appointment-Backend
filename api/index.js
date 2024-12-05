@@ -92,25 +92,24 @@ app.post('/appointments', async (req, res) => {
 
 app.put('/appointments/:phone', async (req, res) => {
     try {
-        const { name, email, date, time, service, notes } = req.body;
+        const { phone } = req.params;
+        const updateFields = req.body;
 
-        // Validate the date format
-        if (!date || isNaN(Date.parse(date))) {
+        // Validate the date format if `date` is provided
+        if (updateFields.date && isNaN(Date.parse(updateFields.date))) {
             return res.status(400).json({ message: 'Invalid date format' });
         }
 
-        // Ensure date is parsed correctly
-        const parsedDate = new Date(date);
-
-        // Ensure that required fields are provided
-        if (!time || !service) {
-            return res.status(400).json({ message: 'Time and service are required to update' });
+        // Parse the date field if provided
+        if (updateFields.date) {
+            updateFields.date = new Date(updateFields.date);
         }
 
+        // Perform the update
         const updatedAppointment = await Appointment.findOneAndUpdate(
-            { phone: req.params.phone },
-            { name, email, date: parsedDate, time, service, notes },
-            { new: true }
+            { phone },
+            { $set: updateFields }, // Only update the provided fields
+            { new: true } // Return the updated document
         );
 
         if (updatedAppointment) {
