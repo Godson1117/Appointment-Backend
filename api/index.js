@@ -28,11 +28,22 @@ const appointmentSchema = new mongoose.Schema({
         type: Date,
         required: true,
     },
+    // time: {
+    //     type: String,
+    //     enum: ['10am', '1pm', '3pm', '5pm'],
+    //     required: true,
+    // },
     time: {
         type: String,
-        enum: ['10am', '1pm', '3pm', '5pm'],
         required: true,
+        validate: {
+            validator: function (value) {
+                return /^([0-1]\d|2[0-3]):([0-5]\d)$/.test(value); // Validates HH:mm format
+            },
+            message: (props) => `${props.value} is not a valid time!`,
+        },
     },
+
     service: {
         type: String,
         enum: ['facial', 'massage', 'haircut', 'manicure'],
@@ -46,11 +57,19 @@ const appointmentSchema = new mongoose.Schema({
 
 const Appointment = mongoose.model('Appointment', appointmentSchema);
 
+function formatTimeToAMPM(time) {
+    const [hours, minutes] = time.split(':');
+    const hour = parseInt(hours, 10);
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    const formattedHour = hour % 12 || 12; // Convert to 12-hour format
+    return `${formattedHour}:${minutes} ${ampm}`;
+}
+
+
 // CRUD APIs
 app.get('/', (req, res) => {
     res.send('Welcome to the Beauty Parlour API');
 })
-
 
 app.get('/appointments/:phone', async (req, res) => {
     try {
@@ -59,19 +78,28 @@ app.get('/appointments/:phone', async (req, res) => {
             const currentDate = new Date();
             const appointmentDate = new Date(appointment.date);
 
+            // Format time to AM/PM before sending the response
+            const formattedTime = formatTimeToAMPM(appointment.time);
+
             // Check if the current time is after the appointment time
             if (currentDate > appointmentDate) {
                 await Appointment.deleteOne({ phone: req.params.phone });
                 return res.json({
                     exists: true,
-                    appointment,
-                    pastAppointment: true // Add this flag
+                    appointment: {
+                        ...appointment.toObject(),
+                        time: formattedTime,
+                    },
+                    pastAppointment: true,
                 });
             } else {
                 return res.json({
                     exists: true,
-                    appointment,
-                    pastAppointment: false // Appointment hasn't passed yet
+                    appointment: {
+                        ...appointment.toObject(),
+                        time: formattedTime,
+                    },
+                    pastAppointment: false,
                 });
             }
         } else {
@@ -87,12 +115,16 @@ app.post('/appointments', async (req, res) => {
     try {
         const { name, email, phone, date, time, service, specialRequests } = req.body;
 
+        // Validate the time format
+        if (!/^[0-2]\d:[0-5]\d$/.test(time)) {
+            return res.status(400).json({ message: 'Invalid time format (HH:mm required)' });
+        }
+
         // Validate the date format
         if (!date || isNaN(Date.parse(date))) {
             return res.status(400).json({ message: 'Invalid date format' });
         }
 
-        // Ensure date is parsed correctly
         const parsedDate = new Date(date);
 
         // Check for required fields
@@ -100,6 +132,15 @@ app.post('/appointments', async (req, res) => {
             return res.status(400).json({ message: 'Name, phone, time, and service are required' });
         }
 
+        // Check for existing appointment with the same date, time, and service
+        const existingAppointment = await Appointment.findOne({ date: parsedDate, time, service });
+        if (existingAppointment) {
+            return res.json({
+                message: `The slot for ${time} on ${parsedDate.toDateString()} for the service "${service}" is already booked. Please select another time or service.`
+            });
+        }
+
+        // Create a new appointment
         const newAppointment = new Appointment({ name, email, phone, date: parsedDate, time, service, specialRequests });
         await newAppointment.save();
         res.status(201).json(newAppointment);
@@ -108,37 +149,66 @@ app.post('/appointments', async (req, res) => {
     }
 });
 
+
 app.put('/appointments/:phone', async (req, res) => {
     try {
         const { phone } = req.params;
-        const updateFields = req.body;
+        const { date, time, service, ...otherFields } = req.body;
 
-        // Validate the date format if `date` is provided
-        if (updateFields.date && isNaN(Date.parse(updateFields.date))) {
+        // Validate the date format if provided
+        if (date && isNaN(Date.parse(date))) {
             return res.status(400).json({ message: 'Invalid date format' });
         }
 
-        // Parse the date field if provided
-        if (updateFields.date) {
-            updateFields.date = new Date(updateFields.date);
+        // Validate the time format if provided
+        if (time && !/^[0-2]\d:[0-5]\d$/.test(time)) {
+            return res.status(400).json({ message: 'Invalid time format (HH:mm required)' });
+        }
+
+        const updateFields = { ...otherFields };
+        if (date) updateFields.date = new Date(date);
+        if (time) updateFields.time = time;
+        if (service) updateFields.service = service;
+
+        // Fetch the current appointment to check against its own data
+        const existingAppointment = await Appointment.findOne({ phone });
+        if (!existingAppointment) {
+            return res.status(404).json({ message: 'Appointment not found' });
+        }
+
+        // Check if the updated time, date, and service conflict with other appointments
+        if ((date || time || service) && (date || existingAppointment.date) && (time || existingAppointment.time) && (service || existingAppointment.service)) {
+            const parsedDate = date ? new Date(date) : existingAppointment.date;
+            const appointmentTime = time || existingAppointment.time;
+            const appointmentService = service || existingAppointment.service;
+
+            const conflict = await Appointment.findOne({
+                date: parsedDate,
+                time: appointmentTime,
+                service: appointmentService,
+                phone: { $ne: phone }, // Exclude the current appointment being updated
+            });
+
+            if (conflict) {
+                return res.json({
+                    message: `The slot for ${appointmentTime} on ${parsedDate.toDateString()} for the service "${appointmentService}" is already booked. Please select another time or service.`,
+                });
+            }
         }
 
         // Perform the update
         const updatedAppointment = await Appointment.findOneAndUpdate(
             { phone },
-            { $set: updateFields }, // Only update the provided fields
+            { $set: updateFields },
             { new: true } // Return the updated document
         );
 
-        if (updatedAppointment) {
-            res.json(updatedAppointment);
-        } else {
-            res.status(404).json({ message: 'Appointment not found' });
-        }
+        res.json(updatedAppointment);
     } catch (err) {
         res.status(500).send(err.message);
     }
 });
+
 
 app.delete('/appointments/:phone', async (req, res) => {
     try {
